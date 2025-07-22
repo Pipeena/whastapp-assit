@@ -1,19 +1,9 @@
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client
 import datetime
 import os
-from dotenv import load_dotenv
-
-load_dotenv()  # Carga variables desde archivo .env
 
 app = Flask(__name__)
-
-# Obtiene las credenciales desde variables de entorno
-account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
-auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
-
-client = Client(account_sid, auth_token)
 
 recordatorios = []
 
@@ -22,25 +12,30 @@ def procesar_mensaje(mensaje):
     if "recuérdame" in mensaje:
         recordatorios.append({
             "mensaje": mensaje,
-            "hora_creacion": datetime.datetime.now().isoformat()
+            "fecha": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
-        return "✅ ¡Recordatorio creado!"
-    elif "ver recordatorios" in mensaje:
+        return "¡Listo! Te recordaré eso."
+    elif "lista" in mensaje:
         if not recordatorios:
-            return "📭 No tienes recordatorios guardados."
-        return "\n".join([f"- {r['mensaje']}" for r in recordatorios])
+            return "No tienes recordatorios aún."
+        return "\n".join(
+            f"{i+1}. {r['mensaje']} - {r['fecha']}" for i, r in enumerate(recordatorios)
+        )
     else:
-        return "🤖 No entendí tu mensaje. Puedes escribir:\n- recuérdame...\n- ver recordatorios"
+        return "No entendí tu mensaje. Prueba con 'Recuérdame...' o 'Lista'."
 
-@app.route('/whatsapp', methods=['POST'])
-def whatsapp():
-    mensaje_usuario = request.form.get('Body', '')
-    respuesta_texto = procesar_mensaje(mensaje_usuario)
-
+@app.route("/sms", methods=['POST'])
+def sms_reply():
+    mensaje = request.form.get('Body')
+    respuesta = procesar_mensaje(mensaje)
     resp = MessagingResponse()
-    resp.message(respuesta_texto)
+    resp.message(respuesta)
     return str(resp)
 
-if __name__ == '__main__':
-    app.run(port=5000)
+@app.route("/", methods=['GET'])
+def home():
+    return "El bot está corriendo correctamente."
 
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
