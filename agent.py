@@ -9,11 +9,15 @@ import dateparser
 import os
 from dotenv import load_dotenv
 import re
+import pytz  # Importante para zona horaria
 
+# Configuración de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Cargar variables de entorno
 load_dotenv()
 
+# Configuración Twilio
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
@@ -23,9 +27,9 @@ client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app = Flask(__name__)
 
 recordatorios = []
+ZONA_CHILE = pytz.timezone("America/Santiago")
 
 def extraer_anticipacion(mensaje):
-    # Buscar "X minutos antes" o similar
     match = re.search(r'(\d+)\s*minutos?\s*antes', mensaje.lower())
     if match:
         return int(match.group(1))
@@ -38,13 +42,25 @@ def procesar_mensaje(mensaje):
 
         anticipacion = extraer_anticipacion(mensaje)
 
-        fecha_evento = dateparser.parse(mensaje, languages=['es'], settings={'PREFER_DATES_FROM': 'future'})
+        ahora_chile = datetime.datetime.now(ZONA_CHILE)
+
+        fecha_evento = dateparser.parse(
+            mensaje,
+            languages=['es'],
+            settings={
+                'PREFER_DATES_FROM': 'future',
+                'TIMEZONE': 'America/Santiago',
+                'TO_TIMEZONE': 'America/Santiago',
+                'RETURN_AS_TIMEZONE_AWARE': True,
+                'RELATIVE_BASE': ahora_chile
+            }
+        )
+
         logging.info(f"Fecha detectada: {fecha_evento}")
 
         if not fecha_evento:
-            return "❌ No pude entender la fecha y hora del recordatorio, intenta de nuevo."
+            return "❌ No pude entender la fecha y hora del recordatorio. Intenta con otro formato."
 
-        # Guardar recordatorio con anticipación en segundos
         recordatorios.append({
             "mensaje": mensaje,
             "fecha_evento": fecha_evento,
@@ -58,7 +74,8 @@ def procesar_mensaje(mensaje):
             return "📭 No tienes recordatorios guardados."
         textos = []
         for r in recordatorios:
-            textos.append(f"- {r['mensaje']} (evento: {r['fecha_evento']})")
+            hora_local = r['fecha_evento'].astimezone(ZONA_CHILE)
+            textos.append(f"- {r['mensaje']} (evento: {hora_local.strftime('%Y-%m-%d %H:%M:%S')})")
         return "\n".join(textos)
 
     else:
@@ -76,7 +93,7 @@ def sms_reply():
 
 def revisar_recordatorios():
     while True:
-        ahora = datetime.datetime.now()
+        ahora = datetime.datetime.now(ZONA_CHILE)
         logging.info(f"Revisando recordatorios a las {ahora.isoformat()}")
         for r in list(recordatorios):
             if r["enviado"]:
@@ -85,7 +102,7 @@ def revisar_recordatorios():
             delta = (tiempo_aviso - ahora).total_seconds()
             logging.info(f"Tiempo para aviso de '{r['mensaje']}': {delta} segundos")
 
-            if 0 <= delta <= 60:  # Enviar dentro del minuto
+            if 0 <= delta <= 60:
                 try:
                     client.messages.create(
                         body=f"⏰ Recordatorio: {r['mensaje']}",
