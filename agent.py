@@ -8,57 +8,64 @@ import logging
 import dateparser
 import os
 from dotenv import load_dotenv
+import re
 
-# Configuración de logging para ver info en consola
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Cargar variables de entorno desde .env
 load_dotenv()
 
-# Configuración Twilio desde variables de entorno
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
-USER_PHONE_NUMBER = os.getenv('USER_PHONE_NUMBER')  # Tu número de WhatsApp para enviar mensajes
+USER_PHONE_NUMBER = os.getenv('USER_PHONE_NUMBER')
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
 app = Flask(__name__)
 
-# Lista para guardar recordatorios en memoria
 recordatorios = []
+
+def extraer_anticipacion(mensaje):
+    # Buscar "X minutos antes" o similar
+    match = re.search(r'(\d+)\s*minutos?\s*antes', mensaje.lower())
+    if match:
+        return int(match.group(1))
+    return 10  # Por defecto 10 minutos antes
 
 def procesar_mensaje(mensaje):
     mensaje_lower = mensaje.lower()
     if "recuérdame" in mensaje_lower:
-        logging.info(f"Procesando recordatorio para mensaje: {mensaje}")
-        fecha_evento = dateparser.parse(mensaje, settings={'PREFER_DATES_FROM': 'future'})
-        logging.info(f"Fecha detectada para recordatorio: {fecha_evento}")
+        logging.info(f"Procesando recordatorio: {mensaje}")
+
+        anticipacion = extraer_anticipacion(mensaje)
+
+        fecha_evento = dateparser.parse(mensaje, languages=['es'], settings={'PREFER_DATES_FROM': 'future'})
+        logging.info(f"Fecha detectada: {fecha_evento}")
 
         if not fecha_evento:
-            return "❌ No pude entender la fecha y hora del recordatorio, intenta de nuevo con otra forma."
+            return "❌ No pude entender la fecha y hora del recordatorio, intenta de nuevo."
 
-        # Guardar recordatorio
+        # Guardar recordatorio con anticipación en segundos
         recordatorios.append({
             "mensaje": mensaje,
-            "fecha_evento": fecha_evento.isoformat(),
-            "hora_creacion": datetime.datetime.now().isoformat()
+            "fecha_evento": fecha_evento,
+            "anticipacion_segundos": anticipacion * 60,
+            "enviado": False
         })
-        return "✅ ¡Recordatorio creado!"
-    
+        return f"✅ Recordatorio creado para {fecha_evento.strftime('%Y-%m-%d %H:%M:%S')} con aviso {anticipacion} minutos antes."
+
     elif "ver recordatorios" in mensaje_lower:
         if not recordatorios:
             return "📭 No tienes recordatorios guardados."
         textos = []
         for r in recordatorios:
-            textos.append(f"- {r['mensaje']} (para {r['fecha_evento']})")
+            textos.append(f"- {r['mensaje']} (evento: {r['fecha_evento']})")
         return "\n".join(textos)
-    
-    else:
-        return "🤖 No entendí tu mensaje. Puedes escribir:\n- recuérdame...\n- ver recordatorios"
 
-@app.route('/whatsapp', methods=['POST'])
-def whatsapp():
+    else:
+        return "🤖 No entendí tu mensaje. Usa:\n- recuérdame [evento] [fecha/hora] [X minutos antes]\n- ver recordatorios"
+
+@app.route('/sms', methods=['POST'])
+def sms_reply():
     mensaje_usuario = request.form.get('Body', '')
     logging.info(f"Mensaje recibido: {mensaje_usuario}")
     respuesta_texto = procesar_mensaje(mensaje_usuario)
@@ -72,12 +79,13 @@ def revisar_recordatorios():
         ahora = datetime.datetime.now()
         logging.info(f"Revisando recordatorios a las {ahora.isoformat()}")
         for r in list(recordatorios):
-            fecha_evento = datetime.datetime.fromisoformat(r["fecha_evento"])
-            delta = (fecha_evento - ahora).total_seconds()
-            logging.info(f"Tiempo restante para recordatorio '{r['mensaje']}': {delta} segundos")
+            if r["enviado"]:
+                continue
+            tiempo_aviso = r["fecha_evento"] - datetime.timedelta(seconds=r["anticipacion_segundos"])
+            delta = (tiempo_aviso - ahora).total_seconds()
+            logging.info(f"Tiempo para aviso de '{r['mensaje']}': {delta} segundos")
 
-            # Enviar recordatorio 10 minutos antes o menos
-            if 0 <= delta <= 600:
+            if 0 <= delta <= 60:  # Enviar dentro del minuto
                 try:
                     client.messages.create(
                         body=f"⏰ Recordatorio: {r['mensaje']}",
@@ -85,13 +93,13 @@ def revisar_recordatorios():
                         to=USER_PHONE_NUMBER
                     )
                     logging.info(f"Recordatorio enviado: {r['mensaje']}")
-                    recordatorios.remove(r)
+                    r["enviado"] = True
                 except Exception as e:
-                    logging.error(f"Error enviando mensaje: {e}")
-        time.sleep(60)
+                    logging.error(f"Error enviando recordatorio: {e}")
+        time.sleep(30)
 
-# Iniciar el hilo para revisar recordatorios en segundo plano
 threading.Thread(target=revisar_recordatorios, daemon=True).start()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
