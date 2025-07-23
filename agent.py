@@ -6,10 +6,11 @@ import time
 import threading
 import logging
 import dateparser
+from dateparser.search import search_dates  # <-- NUEVO IMPORT
 import os
 from dotenv import load_dotenv
 import re
-import pytz  # <-- Importar pytz para manejo de zonas horarias
+import pytz  # Para zonas horarias
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -25,14 +26,14 @@ app = Flask(__name__)
 
 recordatorios = []
 
-# Definir zona horaria de Chile
+# Zona horaria de Chile
 tz_chile = pytz.timezone("America/Santiago")
 
 def extraer_anticipacion(mensaje):
     match = re.search(r'(\d+)\s*minutos?\s*antes', mensaje.lower())
     if match:
         return int(match.group(1))
-    return 10  # Por defecto 10 minutos antes
+    return 10  # Por defecto
 
 def procesar_mensaje(mensaje):
     mensaje_lower = mensaje.lower()
@@ -41,18 +42,24 @@ def procesar_mensaje(mensaje):
 
         anticipacion = extraer_anticipacion(mensaje)
 
-        # Quitar la parte "recuérdame" y "X minutos antes"
+        # Limpiar texto
         mensaje_limpio = re.sub(r"recuérdame", "", mensaje_lower, flags=re.IGNORECASE)
         mensaje_limpio = re.sub(r"\d+\s*minutos?\s*antes", "", mensaje_limpio, flags=re.IGNORECASE).strip()
 
         logging.info(f"Texto para detectar fecha: {mensaje_limpio}")
 
-        fecha_evento = dateparser.parse(
+        # Analizar fecha con timezone awareness
+        resultado = search_dates(
             mensaje_limpio,
             languages=['es'],
-            settings={'PREFER_DATES_FROM': 'future'}
+            settings={
+                'PREFER_DATES_FROM': 'future',
+                'TIMEZONE': 'America/Santiago',
+                'RETURN_AS_TIMEZONE_AWARE': True,
+            }
         )
 
+        fecha_evento = resultado[0][1] if resultado else None
         logging.info(f"Fecha detectada: {fecha_evento}")
 
         if not fecha_evento:
@@ -89,7 +96,7 @@ def sms_reply():
 
 def revisar_recordatorios():
     while True:
-        ahora = datetime.datetime.now(tz_chile)  # Hora actual con zona horaria Chile
+        ahora = datetime.datetime.now(tz_chile)
         logging.info(f"Revisando recordatorios a las {ahora.isoformat()}")
         for r in list(recordatorios):
             if r["enviado"]:
@@ -98,7 +105,7 @@ def revisar_recordatorios():
             delta = (tiempo_aviso - ahora).total_seconds()
             logging.info(f"Tiempo para aviso de '{r['mensaje']}': {delta} segundos")
 
-            if 0 <= delta <= 60:  # Enviar dentro del minuto
+            if 0 <= delta <= 60:
                 try:
                     client.messages.create(
                         body=f"⏰ Recordatorio: {r['mensaje']}",
@@ -116,4 +123,3 @@ threading.Thread(target=revisar_recordatorios, daemon=True).start()
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
