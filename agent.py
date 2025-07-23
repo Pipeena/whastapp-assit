@@ -9,6 +9,7 @@ import dateparser
 import os
 from dotenv import load_dotenv
 import re
+import pytz  # <-- Importar pytz para manejo de zonas horarias
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -23,6 +24,9 @@ client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app = Flask(__name__)
 
 recordatorios = []
+
+# Definir zona horaria de Chile
+tz_chile = pytz.timezone("America/Santiago")
 
 def extraer_anticipacion(mensaje):
     # Buscar "X minutos antes" o similar
@@ -76,7 +80,7 @@ def sms_reply():
 
 def revisar_recordatorios():
     while True:
-        ahora = datetime.datetime.now()
+        ahora = datetime.datetime.now(tz_chile)  # <-- Hora actual con zona horaria Chile
         logging.info(f"Revisando recordatorios a las {ahora.isoformat()}")
         for r in list(recordatorios):
             if r["enviado"]:
