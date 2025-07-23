@@ -9,7 +9,6 @@ import dateparser
 import os
 from dotenv import load_dotenv
 import re
-import pytz  # <-- Importar pytz para manejo de zonas horarias
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -25,11 +24,7 @@ app = Flask(__name__)
 
 recordatorios = []
 
-# Definir zona horaria de Chile
-tz_chile = pytz.timezone("America/Santiago")
-
 def extraer_anticipacion(mensaje):
-    # Buscar "X minutos antes" o similar
     match = re.search(r'(\d+)\s*minutos?\s*antes', mensaje.lower())
     if match:
         return int(match.group(1))
@@ -42,13 +37,23 @@ def procesar_mensaje(mensaje):
 
         anticipacion = extraer_anticipacion(mensaje)
 
-        fecha_evento = dateparser.parse(mensaje, languages=['es'], settings={'PREFER_DATES_FROM': 'future'})
+        # Limpiar mensaje para mejorar la detección de la fecha
+        mensaje_limpio = re.sub(r"recuérdame", "", mensaje_lower, flags=re.IGNORECASE)
+        mensaje_limpio = re.sub(r"\d+\s*minutos?\s*antes", "", mensaje_limpio, flags=re.IGNORECASE).strip()
+
+        logging.info(f"Texto para detectar fecha: {mensaje_limpio}")
+
+        fecha_evento = dateparser.parse(
+            mensaje_limpio,
+            languages=['es'],
+            settings={'PREFER_DATES_FROM': 'future'}
+        )
+
         logging.info(f"Fecha detectada: {fecha_evento}")
 
         if not fecha_evento:
             return "❌ No pude entender la fecha y hora del recordatorio, intenta de nuevo."
 
-        # Guardar recordatorio con anticipación en segundos
         recordatorios.append({
             "mensaje": mensaje,
             "fecha_evento": fecha_evento,
@@ -80,7 +85,7 @@ def sms_reply():
 
 def revisar_recordatorios():
     while True:
-        ahora = datetime.datetime.now(tz_chile)  # <-- Hora actual con zona horaria Chile
+        ahora = datetime.datetime.now()
         logging.info(f"Revisando recordatorios a las {ahora.isoformat()}")
         for r in list(recordatorios):
             if r["enviado"]:
@@ -89,7 +94,7 @@ def revisar_recordatorios():
             delta = (tiempo_aviso - ahora).total_seconds()
             logging.info(f"Tiempo para aviso de '{r['mensaje']}': {delta} segundos")
 
-            if 0 <= delta <= 60:  # Enviar dentro del minuto
+            if 0 <= delta <= 60:
                 try:
                     client.messages.create(
                         body=f"⏰ Recordatorio: {r['mensaje']}",
