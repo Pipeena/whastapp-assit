@@ -1,62 +1,97 @@
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-from apscheduler.schedulers.background import BackgroundScheduler
-import dateparser
+from twilio.rest import Client
 import datetime
-import pytz
+import time
+import threading
+import logging
+import dateparser
+import os
+from dotenv import load_dotenv
+
+# Configuración de logging para ver info en consola
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Cargar variables de entorno desde .env
+load_dotenv()
+
+# Configuración Twilio desde variables de entorno
+TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
+TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
+USER_PHONE_NUMBER = os.getenv('USER_PHONE_NUMBER')  # Tu número de WhatsApp para enviar mensajes
+
+client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 app = Flask(__name__)
-scheduler = BackgroundScheduler()
-scheduler.start()
 
+# Lista para guardar recordatorios en memoria
 recordatorios = []
 
-def enviar_recordatorio(numero, mensaje):
-    # Esta función puede luego conectarse con Twilio directamente
-    print(f"Enviando recordatorio a {numero}: {mensaje}")
+def procesar_mensaje(mensaje):
+    mensaje_lower = mensaje.lower()
+    if "recuérdame" in mensaje_lower:
+        logging.info(f"Procesando recordatorio para mensaje: {mensaje}")
+        fecha_evento = dateparser.parse(mensaje, settings={'PREFER_DATES_FROM': 'future'})
+        logging.info(f"Fecha detectada para recordatorio: {fecha_evento}")
 
-@app.route("/", methods=["POST"])
-def whatsapp_bot():
-    mensaje = request.form.get('Body').lower()
-    numero = request.form.get('From')
-    respuesta = MessagingResponse()
+        if not fecha_evento:
+            return "❌ No pude entender la fecha y hora del recordatorio, intenta de nuevo con otra forma."
 
-    if "recuérdame" in mensaje or "recordatorio" in mensaje:
-        fecha = dateparser.parse(mensaje, settings={'PREFER_DATES_FROM': 'future'})
-        
-        if not fecha:
-            respuesta.message("No pude entender la fecha y hora. Intenta decir algo como:\n'Reunión con Luis el viernes a las 10am, recuérdame 10 minutos antes.'")
-            return str(respuesta)
-
-        anticipacion = 0
-        if "minuto" in mensaje:
-            palabras = mensaje.split()
-            for i, palabra in enumerate(palabras):
-                if "minuto" in palabra:
-                    try:
-                        anticipacion = int(palabras[i - 1])
-                    except:
-                        anticipacion = 10
-                    break
-
-        # Hora de envío
-        hora_envio = fecha - datetime.timedelta(minutes=anticipacion)
-
-        if hora_envio < datetime.datetime.now():
-            respuesta.message("La hora del recordatorio ya pasó. Intenta una hora futura.")
-            return str(respuesta)
-
-        scheduler.add_job(
-            enviar_recordatorio,
-            trigger='date',
-            run_date=hora_envio,
-            args=[numero, f"🔔 Recordatorio: {mensaje}"],
-            timezone=pytz.timezone("America/Santiago")
-        )
-
-        respuesta.message(f"✅ Recordatorio agendado para el {fecha.strftime('%A %d/%m %H:%M')}.\nTe avisaré {anticipacion} minutos antes.")
-
+        # Guardar recordatorio
+        recordatorios.append({
+            "mensaje": mensaje,
+            "fecha_evento": fecha_evento.isoformat(),
+            "hora_creacion": datetime.datetime.now().isoformat()
+        })
+        return "✅ ¡Recordatorio creado!"
+    
+    elif "ver recordatorios" in mensaje_lower:
+        if not recordatorios:
+            return "📭 No tienes recordatorios guardados."
+        textos = []
+        for r in recordatorios:
+            textos.append(f"- {r['mensaje']} (para {r['fecha_evento']})")
+        return "\n".join(textos)
+    
     else:
-        respuesta.message("Hola 👋, soy tu asistente. Puedes decirme:\n'Recuérdame reunión con Luis el viernes a las 10am, 10 minutos antes.'")
+        return "🤖 No entendí tu mensaje. Puedes escribir:\n- recuérdame...\n- ver recordatorios"
 
-    return str(respuesta)
+@app.route('/whatsapp', methods=['POST'])
+def whatsapp():
+    mensaje_usuario = request.form.get('Body', '')
+    logging.info(f"Mensaje recibido: {mensaje_usuario}")
+    respuesta_texto = procesar_mensaje(mensaje_usuario)
+
+    resp = MessagingResponse()
+    resp.message(respuesta_texto)
+    return str(resp)
+
+def revisar_recordatorios():
+    while True:
+        ahora = datetime.datetime.now()
+        logging.info(f"Revisando recordatorios a las {ahora.isoformat()}")
+        for r in list(recordatorios):
+            fecha_evento = datetime.datetime.fromisoformat(r["fecha_evento"])
+            delta = (fecha_evento - ahora).total_seconds()
+            logging.info(f"Tiempo restante para recordatorio '{r['mensaje']}': {delta} segundos")
+
+            # Enviar recordatorio 10 minutos antes o menos
+            if 0 <= delta <= 600:
+                try:
+                    client.messages.create(
+                        body=f"⏰ Recordatorio: {r['mensaje']}",
+                        from_=TWILIO_PHONE_NUMBER,
+                        to=USER_PHONE_NUMBER
+                    )
+                    logging.info(f"Recordatorio enviado: {r['mensaje']}")
+                    recordatorios.remove(r)
+                except Exception as e:
+                    logging.error(f"Error enviando mensaje: {e}")
+        time.sleep(60)
+
+# Iniciar el hilo para revisar recordatorios en segundo plano
+threading.Thread(target=revisar_recordatorios, daemon=True).start()
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
