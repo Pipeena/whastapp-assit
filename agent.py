@@ -1,41 +1,62 @@
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
+from apscheduler.schedulers.background import BackgroundScheduler
+import dateparser
 import datetime
-import os
+import pytz
 
 app = Flask(__name__)
+scheduler = BackgroundScheduler()
+scheduler.start()
 
 recordatorios = []
 
-def procesar_mensaje(mensaje):
-    mensaje = mensaje.lower()
-    if "recuérdame" in mensaje:
-        recordatorios.append({
-            "mensaje": mensaje,
-            "fecha": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
-        return "¡Listo! Te recordaré eso."
-    elif "lista" in mensaje:
-        if not recordatorios:
-            return "No tienes recordatorios aún."
-        return "\n".join(
-            f"{i+1}. {r['mensaje']} - {r['fecha']}" for i, r in enumerate(recordatorios)
+def enviar_recordatorio(numero, mensaje):
+    # Esta función puede luego conectarse con Twilio directamente
+    print(f"Enviando recordatorio a {numero}: {mensaje}")
+
+@app.route("/", methods=["POST"])
+def whatsapp_bot():
+    mensaje = request.form.get('Body').lower()
+    numero = request.form.get('From')
+    respuesta = MessagingResponse()
+
+    if "recuérdame" in mensaje or "recordatorio" in mensaje:
+        fecha = dateparser.parse(mensaje, settings={'PREFER_DATES_FROM': 'future'})
+        
+        if not fecha:
+            respuesta.message("No pude entender la fecha y hora. Intenta decir algo como:\n'Reunión con Luis el viernes a las 10am, recuérdame 10 minutos antes.'")
+            return str(respuesta)
+
+        anticipacion = 0
+        if "minuto" in mensaje:
+            palabras = mensaje.split()
+            for i, palabra in enumerate(palabras):
+                if "minuto" in palabra:
+                    try:
+                        anticipacion = int(palabras[i - 1])
+                    except:
+                        anticipacion = 10
+                    break
+
+        # Hora de envío
+        hora_envio = fecha - datetime.timedelta(minutes=anticipacion)
+
+        if hora_envio < datetime.datetime.now():
+            respuesta.message("La hora del recordatorio ya pasó. Intenta una hora futura.")
+            return str(respuesta)
+
+        scheduler.add_job(
+            enviar_recordatorio,
+            trigger='date',
+            run_date=hora_envio,
+            args=[numero, f"🔔 Recordatorio: {mensaje}"],
+            timezone=pytz.timezone("America/Santiago")
         )
+
+        respuesta.message(f"✅ Recordatorio agendado para el {fecha.strftime('%A %d/%m %H:%M')}.\nTe avisaré {anticipacion} minutos antes.")
+
     else:
-        return "No entendí tu mensaje. Prueba con 'Recuérdame...' o 'Lista'."
+        respuesta.message("Hola 👋, soy tu asistente. Puedes decirme:\n'Recuérdame reunión con Luis el viernes a las 10am, 10 minutos antes.'")
 
-@app.route("/sms", methods=['POST'])
-def sms_reply():
-    mensaje = request.form.get('Body')
-    respuesta = procesar_mensaje(mensaje)
-    resp = MessagingResponse()
-    resp.message(respuesta)
-    return str(resp)
-
-@app.route("/", methods=['GET'])
-def home():
-    return "El bot está corriendo correctamente."
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    return str(respuesta)
